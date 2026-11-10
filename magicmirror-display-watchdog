@@ -1,0 +1,87 @@
+import re
+import subprocess
+import time
+from pathlib import Path
+
+
+UNDERRUN = r"^i915 [0-9a-fA-F:.]+: \[drm\] \*ERROR\* CPU pipe A FIFO underrun$"
+COOLDOWN_SECONDS = 600
+MIRROR = Path.home() / "MagicMirror"
+DISPLAY_CONFIG = "org.gnome.Mutter.DisplayConfig"
+
+
+def power_mode():
+    try:
+        return subprocess.check_output(
+            [
+                "/usr/bin/busctl", "--user", "get-property", DISPLAY_CONFIG,
+                "/org/gnome/Mutter/DisplayConfig", DISPLAY_CONFIG, "PowerSaveMode",
+            ],
+            text=True,
+            timeout=5,
+        ).strip()
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"Could not read GNOME display power state: {error}")
+        return None
+
+
+def run_monitor_script(name):
+    try:
+        subprocess.run(
+            ["/bin/bash", str(MIRROR / name)], check=True, timeout=8,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"{name} failed: {error}")
+
+
+def recover_display():
+    try:
+        run_monitor_script("monitorOff.sh")
+        time.sleep(3)
+    finally:
+        run_monitor_script("monitorOn.sh")
+        if power_mode() != "i 0":
+            print("Display did not report on after wake. Retrying wake once.")
+            run_monitor_script("monitorOn.sh")
+
+    if power_mode() == "i 0":
+        print("Output cycle finished. GNOME reports the display on.")
+    else:
+        print("Output cycle finished without confirming the display is on.")
+
+
+def watch(lines):
+    last_attempt = float("-inf")
+    for line in lines:
+        message = line.rstrip("\n")
+        if not re.fullmatch(UNDERRUN, message):
+            continue
+        if time.monotonic() - last_attempt < COOLDOWN_SECONDS:
+            print(f"Skipping underrun during cooldown: {message}")
+            continue
+
+        # Let a display power transition already in progress settle first.
+        time.sleep(2)
+        mode = power_mode()
+        if mode != "i 0":
+            print(f"Skipping underrun because display is not confirmed on: {mode!r}")
+            continue
+
+        last_attempt = time.monotonic()
+        print(f"Cycling display output after kernel underrun: {message}")
+        recover_display()
+
+
+def main():
+    command = [
+        "/usr/bin/journalctl", "--dmesg", "--boot", "--follow", "--lines=0",
+        "--output=cat", "--no-pager", f"--grep={UNDERRUN}",
+    ]
+    print(f"Following new Intel pipe A FIFO underruns. Cooldown is {COOLDOWN_SECONDS}s.")
+    with subprocess.Popen(command, stdout=subprocess.PIPE, text=True) as journal:
+        watch(journal.stdout)
+        raise SystemExit(f"Kernel journal follow stopped (status {journal.wait()}).")
+
+
+if __name__ == "__main__":
+    main()

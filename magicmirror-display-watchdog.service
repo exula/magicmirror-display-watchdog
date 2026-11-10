@@ -1,0 +1,11 @@
+[Unit]
+Description=Recover MagicMirror display after Intel HDMI FIFO underruns
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/python3 -u %h/.local/bin/magicmirror-display-watchdog
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=default.target

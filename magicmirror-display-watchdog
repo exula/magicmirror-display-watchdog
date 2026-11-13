@@ -6,6 +6,7 @@ from pathlib import Path
 
 UNDERRUN = r"^i915 [0-9a-fA-F:.]+: \[drm\] \*ERROR\* CPU pipe A FIFO underrun$"
 COOLDOWN_SECONDS = 600
+WAKE_SETTLE_SECONDS = 5
 MIRROR = Path.home() / "MagicMirror"
 DISPLAY_CONFIG = "org.gnome.Mutter.DisplayConfig"
 
@@ -50,6 +51,28 @@ def recover_display():
         print("Output cycle finished without confirming the display is on.")
 
 
+def underrun_since(started_at):
+    # Use journal timestamps so an earlier error queued by the follower
+    # cannot count as an error during the recovery cycle.
+    try:
+        return subprocess.check_output(
+            [
+                "/usr/bin/journalctl", "--dmesg", "--boot", "--no-pager",
+                "--output=cat", "--lines=1", f"--grep={UNDERRUN}",
+                f"--since=@{started_at:.6f}",
+            ],
+            text=True,
+            timeout=5,
+        ).strip()
+    except subprocess.CalledProcessError as error:
+        # journalctl --grep exits with status 1 when there are no matches.
+        if error.returncode != 1 or error.output.strip():
+            print(f"Could not check for an underrun after wake: {error}")
+    except (OSError, subprocess.TimeoutExpired) as error:
+        print(f"Could not check for an underrun after wake: {error}")
+    return ""
+
+
 def watch(lines):
     last_attempt = float("-inf")
     for line in lines:
@@ -69,7 +92,16 @@ def watch(lines):
 
         last_attempt = time.monotonic()
         print(f"Cycling display output after kernel underrun: {message}")
+        started_at = time.time()
         recover_display()
+        time.sleep(WAKE_SETTLE_SECONDS)
+        if underrun_since(started_at):
+            mode = power_mode()
+            if mode == "i 0":
+                print("Another underrun during recovery. Retrying the output cycle once.")
+                recover_display()
+            else:
+                print(f"Skipping recovery retry because display is not confirmed on: {mode!r}")
 
 
 def main():

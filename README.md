@@ -2,8 +2,11 @@
 
 The watchdog follows new kernel journal entries for the Intel i915 error
 `CPU pipe A FIFO underrun`. When GNOME reports that the display is on,
-it puts the output in standby, waits three seconds, and wakes it. It
-attempts recovery at most once every ten minutes while running.
+it puts the output in standby, waits three seconds, and wakes it. If
+another underrun occurs during the cycle or within five seconds after
+it finishes, the watchdog checks that the display is on and repeats
+the cycle once. The ten-minute cooldown starts with the first cycle
+and applies to the whole recovery sequence.
 
 ## Prerequisites
 

@@ -5,8 +5,9 @@ The watchdog follows new kernel journal entries for the Intel i915 error
 it puts the output in standby, waits three seconds, and wakes it. If
 another underrun occurs during the cycle or within five seconds after
 it finishes, the watchdog checks that the display is on and repeats
-the cycle once. The ten-minute cooldown starts with the first cycle
-and applies to the whole recovery sequence.
+the cycle once. Errors during that retry and its five-second settling
+period are part of the same recovery. A new error after recovery
+finishes can trigger another cycle immediately.
 
 ## Prerequisites
 

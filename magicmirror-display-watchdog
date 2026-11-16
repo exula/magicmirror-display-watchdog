@@ -1,3 +1,4 @@
+import json
 import re
 import subprocess
 import time
@@ -5,7 +6,6 @@ from pathlib import Path
 
 
 UNDERRUN = r"^i915 [0-9a-fA-F:.]+: \[drm\] \*ERROR\* CPU pipe A FIFO underrun$"
-COOLDOWN_SECONDS = 600
 WAKE_SETTLE_SECONDS = 5
 MIRROR = Path.home() / "MagicMirror"
 DISPLAY_CONFIG = "org.gnome.Mutter.DisplayConfig"
@@ -51,7 +51,7 @@ def recover_display():
         print("Output cycle finished without confirming the display is on.")
 
 
-def underrun_since(started_at):
+def underrun_during(started_at, finished_at):
     # Use journal timestamps so an earlier error queued by the follower
     # cannot count as an error during the recovery cycle.
     try:
@@ -59,7 +59,7 @@ def underrun_since(started_at):
             [
                 "/usr/bin/journalctl", "--dmesg", "--boot", "--no-pager",
                 "--output=cat", "--lines=1", f"--grep={UNDERRUN}",
-                f"--since=@{started_at:.6f}",
+                f"--since=@{started_at:.6f}", f"--until=@{finished_at:.6f}",
             ],
             text=True,
             timeout=5,
@@ -74,13 +74,15 @@ def underrun_since(started_at):
 
 
 def watch(lines):
-    last_attempt = float("-inf")
+    recovered_through = 0.0
     for line in lines:
-        message = line.rstrip("\n")
+        entry = json.loads(line)
+        message = entry["MESSAGE"]
         if not re.fullmatch(UNDERRUN, message):
             continue
-        if time.monotonic() - last_attempt < COOLDOWN_SECONDS:
-            print(f"Skipping underrun during cooldown: {message}")
+        timestamp = int(entry["__REALTIME_TIMESTAMP"]) / 1_000_000
+        if timestamp <= recovered_through:
+            print(f"Skipping underrun already covered by recovery: {message}")
             continue
 
         # Let a display power transition already in progress settle first.
@@ -90,26 +92,30 @@ def watch(lines):
             print(f"Skipping underrun because display is not confirmed on: {mode!r}")
             continue
 
-        last_attempt = time.monotonic()
         print(f"Cycling display output after kernel underrun: {message}")
         started_at = time.time()
         recover_display()
         time.sleep(WAKE_SETTLE_SECONDS)
-        if underrun_since(started_at):
-            mode = power_mode()
-            if mode == "i 0":
-                print("Another underrun during recovery. Retrying the output cycle once.")
-                recover_display()
-            else:
-                print(f"Skipping recovery retry because display is not confirmed on: {mode!r}")
+        recovered_through = time.time()
+        if not underrun_during(started_at, recovered_through):
+            continue
+
+        mode = power_mode()
+        if mode != "i 0":
+            print(f"Skipping recovery retry because display is not confirmed on: {mode!r}")
+            continue
+        print("Another underrun during recovery. Retrying the output cycle once.")
+        recover_display()
+        time.sleep(WAKE_SETTLE_SECONDS)
+        recovered_through = time.time()
 
 
 def main():
     command = [
         "/usr/bin/journalctl", "--dmesg", "--boot", "--follow", "--lines=0",
-        "--output=cat", "--no-pager", f"--grep={UNDERRUN}",
+        "--output=json", "--output-fields=MESSAGE", "--no-pager", f"--grep={UNDERRUN}",
     ]
-    print(f"Following new Intel pipe A FIFO underruns. Cooldown is {COOLDOWN_SECONDS}s.")
+    print("Following new Intel pipe A FIFO underruns.")
     with subprocess.Popen(command, stdout=subprocess.PIPE, text=True) as journal:
         watch(journal.stdout)
         raise SystemExit(f"Kernel journal follow stopped (status {journal.wait()}).")
